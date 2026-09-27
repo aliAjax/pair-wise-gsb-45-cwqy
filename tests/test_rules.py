@@ -30,3 +30,16 @@ class RulesTest(unittest.TestCase):
         invalid["draft_m"] = 12.0
         with self.assertRaises(ValidationError):
             self.rules.prepare_create(invalid)
+
+    def test_tide_assessment_earliest_berth_hour(self):
+        # ETA=6，窗口[4,8]低潮-0.3导致余量不足；8点后上涨，交点应在8.67
+        tides = [{"id": i + 1, "tide_hour": h, "tide_height_m": v}
+                 for i, (h, v) in enumerate(((4, -0.3), (6, 1.0), (8, -0.3), (10, 1.2)))]
+        result = self.rules.assess_berthing(
+            berth_depth=11.5, actual_draft=11.2, eta_hour=6, tide_entries=tides)
+        self.assertFalse(result["feasible"])
+        self.assertEqual(result["shortage_m"], 0.5)
+        self.assertAlmostEqual(result["earliest_berth_hour"], 8.67, places=2)
+        # 窗口缺潮位数据时直接报错
+        with self.assertRaises(ValidationError):
+            self.rules.assess_berthing(11.5, 11.2, 6, [])
