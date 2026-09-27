@@ -8,26 +8,153 @@
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #17212b; }
     main { max-width: 960px; margin: auto; }
     button { padding: .55rem .9rem; cursor: pointer; }
-    pre { background: #f4f6f8; padding: 1rem; overflow: auto; border-radius: 8px; }
-    .row { display: flex; gap: 1rem; align-items: center; }
+    input { padding: .45rem; }
+    pre { background: #f4f6f8; padding: 1rem; overflow: auto; border-radius: 8px; white-space: pre-wrap; }
+    section { border: 1px solid #dde3ea; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+    table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
+    th, td { border: 1px solid #dde3ea; padding: .35rem .6rem; text-align: left; }
+    .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin: .5rem 0; }
   </style>
 </head>
 <body>
 <main>
   <h1>港口泊位与航道调度</h1>
-  <p>最小演示页。完整业务流程通过README中的JSON接口调用。</p>
-  <div class="row"><button id="load">加载记录</button><button id="stats">查看状态统计</button></div>
-  <pre id="output">点击上方按钮读取服务状态。</pre>
+
+  <section>
+    <h2>潮位看板</h2>
+    <div class="row">
+      <input id="tide-berth" placeholder="泊位 如B12">
+      <input id="tide-hour" type="number" min="0" max="23" placeholder="潮时(0-23)">
+      <input id="tide-height" type="number" step="0.01" placeholder="潮高(米)">
+      <button id="tide-add">录入潮位</button>
+      <input id="tide-filter" placeholder="按泊位筛选(可空)">
+      <button id="tide-load">刷新看板</button>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>泊位</th><th>潮时</th><th>潮高(米)</th><th>最近修改人</th><th>操作</th></tr></thead>
+      <tbody id="tide-body"><tr><td colspan="6">暂无潮位数据</td></tr></tbody>
+    </table>
+    <div class="row">
+      <input id="fix-id" type="number" placeholder="修正记录ID">
+      <input id="fix-height" type="number" step="0.01" placeholder="修正后潮高(米)">
+      <input id="fix-reason" placeholder="修正原因">
+      <button id="fix-submit">提交修正</button>
+    </div>
+    <pre id="tide-output">同一泊位同一潮时重复录入会提示已有数据；修正保留修改前后记录。</pre>
+  </section>
+
+  <section>
+    <h2>靠泊审批</h2>
+    <div class="row">
+      <input id="record-id" type="number" placeholder="航次记录ID">
+      <button id="record-load">读取记录</button>
+      <input id="actual-draft" type="number" step="0.01" placeholder="实际吃水(米)">
+      <button id="berth-submit">靠泊审批</button>
+    </div>
+    <pre id="berth-output">审批取预计到达前后两小时最低潮位与实际吃水比较，安全余量不足半米时给出差额与最早可靠泊时刻。</pre>
+  </section>
+
+  <section>
+    <h2>记录与统计</h2>
+    <div class="row"><button id="load">加载记录</button><button id="stats">查看状态统计</button></div>
+    <pre id="output">点击上方按钮读取服务状态。</pre>
+  </section>
 </main>
 <script>
 const headers = {"X-User-Id":"demo-admin","X-Role":"admin","X-Org":"demo"};
-async function show(path) {
-  const response = await fetch(path, {headers});
-  const data = await response.json();
-  document.getElementById("output").textContent = JSON.stringify(data, null, 2);
+const jsonHeaders = Object.assign({"Content-Type":"application/json"}, headers);
+
+function esc(text) {
+  return String(text).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 }
-document.getElementById("load").onclick = () => show("/api/records?limit=20");
-document.getElementById("stats").onclick = () => show("/api/stats");
+async function request(path, options) {
+  const response = await fetch(path, options);
+  const data = await response.json();
+  return {status: response.status, data};
+}
+function show(id, value) {
+  document.getElementById(id).textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+async function loadTides() {
+  const berth = document.getElementById("tide-filter").value.trim();
+  const path = "/api/tides" + (berth ? "?berth=" + encodeURIComponent(berth) : "");
+  const {data} = await request(path, {headers});
+  const items = data.items || [];
+  document.getElementById("tide-body").innerHTML = items.map(t =>
+    `<tr><td>${t.id}</td><td>${esc(t.berth)}</td><td>${t.tide_hour}时</td><td>${t.height_m}</td><td>${esc(t.updated_by)}</td>` +
+    `<td><button data-fix="${t.id}" data-height="${t.height_m}">修正</button> <button data-hist="${t.id}">修改记录</button></td></tr>`
+  ).join("") || `<tr><td colspan="6">暂无潮位数据</td></tr>`;
+}
+
+document.getElementById("tide-add").onclick = async () => {
+  const body = {
+    berth: document.getElementById("tide-berth").value,
+    tide_hour: Number(document.getElementById("tide-hour").value),
+    height_m: Number(document.getElementById("tide-height").value),
+  };
+  const {status, data} = await request("/api/tides", {method: "POST", headers: jsonHeaders, body: JSON.stringify(body)});
+  show("tide-output", status >= 400 ? "录入失败：" + data.message : `已录入 ${data.berth} ${data.tide_hour}时 潮高${data.height_m}米`);
+  if (status < 400) loadTides();
+};
+document.getElementById("tide-load").onclick = loadTides;
+
+document.getElementById("tide-body").onclick = async (event) => {
+  const fix = event.target.getAttribute("data-fix");
+  const hist = event.target.getAttribute("data-hist");
+  if (fix) {
+    document.getElementById("fix-id").value = fix;
+    document.getElementById("fix-height").value = event.target.getAttribute("data-height");
+  } else if (hist) {
+    const {data} = await request(`/api/tides/${hist}/corrections`, {headers});
+    const items = data.items || [];
+    show("tide-output", items.length
+      ? items.map(c => `#${c.id} ${c.old_height_m}米 → ${c.new_height_m}米（${c.actor_id}：${c.reason || "未填原因"}，${c.created_at}）`).join("\n")
+      : "暂无修正记录");
+  }
+};
+
+document.getElementById("fix-submit").onclick = async () => {
+  const id = document.getElementById("fix-id").value;
+  if (!id) { show("tide-output", "请先选择要修正的潮位记录"); return; }
+  const body = {height_m: Number(document.getElementById("fix-height").value), reason: document.getElementById("fix-reason").value};
+  const {status, data} = await request(`/api/tides/${id}/corrections`, {method: "POST", headers: jsonHeaders, body: JSON.stringify(body)});
+  if (status >= 400) { show("tide-output", "修正失败：" + data.message); return; }
+  show("tide-output", `已修正：${data.correction.old_height_m}米 → ${data.correction.new_height_m}米`);
+  loadTides();
+};
+
+let currentRecord = null;
+document.getElementById("record-load").onclick = async () => {
+  const id = document.getElementById("record-id").value;
+  const {status, data} = await request("/api/records/" + id, {headers});
+  if (status >= 400) { currentRecord = null; show("berth-output", data.message); return; }
+  currentRecord = data;
+  show("berth-output", data);
+};
+document.getElementById("berth-submit").onclick = async () => {
+  if (!currentRecord) { show("berth-output", "请先读取航次记录"); return; }
+  const body = {expected_version: currentRecord.version, data: {actual_draft_m: Number(document.getElementById("actual-draft").value)}};
+  const {status, data} = await request(`/api/records/${currentRecord.id}/actions/berth`, {method: "POST", headers: jsonHeaders, body: JSON.stringify(body)});
+  if (status >= 400) {
+    let text = "审批未通过：" + data.message;
+    const d = data.details || {};
+    if (d.shortfall_m != null) text += `\n还差 ${d.shortfall_m} 米`;
+    text += d.earliest_berth_hour != null ? `\n最早可靠泊时刻：${d.earliest_berth_hour}时` : "\n未来24小时内暂无可靠泊窗口";
+    show("berth-output", text + "\n" + JSON.stringify(d, null, 2));
+    return;
+  }
+  currentRecord = data;
+  show("berth-output", "审批通过，船舶已靠泊。潮汐校验快照：\n" + JSON.stringify(data.payload.tide_check, null, 2));
+};
+
+async function showJson(path) {
+  const {data} = await request(path, {headers});
+  show("output", data);
+}
+document.getElementById("load").onclick = () => showJson("/api/records?limit=20");
+document.getElementById("stats").onclick = () => showJson("/api/stats");
+loadTides();
 </script>
 </body>
 </html>

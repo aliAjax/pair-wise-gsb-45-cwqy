@@ -51,7 +51,13 @@ class Service:
             raise PermissionDenied("角色无权执行该操作")
         record = self.repository.get(record_id)
         self.rules.require_transition(record, action)
-        new_state, new_payload, summary = self.rules.apply_action(record, action, data or {})
+        tides = None
+        if action == "berth":
+            tides = self.repository.list_tides(berth=str(record["payload"].get("berth", "")))
+        new_state, new_payload, summary = self.rules.apply_action(record, action, data or {}, tides=tides)
+        details: Dict[str, Any] = {"summary": summary, "input": data or {}, "from": record["state"], "to": new_state}
+        if action == "berth" and "tide_check" in new_payload:
+            details["tide_check"] = new_payload["tide_check"]
         return self.repository.mutate(
             record_id=record_id,
             expected_version=int(expected_version),
@@ -59,8 +65,34 @@ class Service:
             payload=new_payload,
             actor_id=actor.user_id,
             action=action,
-            details={"summary": summary, "input": data or {}, "from": record["state"], "to": new_state},
+            details=details,
         )
+
+    def create_tide(self, actor: Actor, payload: Dict[str, Any]) -> Dict[str, Any]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        if not self.rules.role_can_enter_tide(actor.role):
+            raise PermissionDenied("角色无权录入潮位")
+        prepared = self.rules.validate_tide(payload or {})
+        return self.repository.create_tide(prepared["berth"], prepared["tide_hour"], prepared["height_m"], actor.user_id)
+
+    def list_tides(self, actor: Actor, berth: Optional[str] = None) -> List[Dict[str, Any]]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        return self.repository.list_tides(berth=berth)
+
+    def correct_tide(self, actor: Actor, observation_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        if not self.rules.role_can_enter_tide(actor.role):
+            raise PermissionDenied("角色无权修正潮位")
+        height_m, reason = self.rules.validate_tide_correction(payload or {})
+        return self.repository.correct_tide(observation_id, height_m, reason, actor.user_id)
+
+    def tide_history(self, actor: Actor, observation_id: int) -> List[Dict[str, Any]]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        return self.repository.tide_corrections(observation_id)
 
     def timeline(self, actor: Actor, record_id: int) -> List[Dict[str, Any]]:
         actor = self._actor(actor)

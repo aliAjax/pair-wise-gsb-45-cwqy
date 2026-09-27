@@ -32,8 +32,18 @@ python3 app.py --db ./data.db --port 8321
 - `GET /api/stats`：状态统计。
 - `POST /api/records`：创建记录，请求体为`{"reference":"...","data":{...}}`。
 - `POST /api/records/{id}/actions/{action}`：执行业务动作，请求体为`{"expected_version":1,"data":{...}}`。
+- `GET /api/tides`：潮位看板列表，可带`berth`参数。
+- `POST /api/tides`：录入潮位，请求体为`{"berth":"B12","tide_hour":8,"height_m":1.2}`；同一泊位同一潮时重复录入返回409提示已有数据。
+- `POST /api/tides/{id}/corrections`：修正潮位，请求体为`{"height_m":1.6,"reason":"..."}`，修改前后值均留痕。
+- `GET /api/tides/{id}/corrections`：某条潮位的修正历史。
 
 除`/health`和`/`外，请求需提供`X-User-Id`、`X-Role`，可选`X-Org`。
+
+## 潮位看板与靠泊审批
+
+- 值班员（角色`duty_officer`）按泊位录入潮时（0-23整点）与潮高，修正同样由值班员提交并保留修改前后记录。
+- 靠泊审批（`berth`动作）取预计到达前后两小时内的最低潮位，叠加泊位基准水深后与实际吃水比较；安全余量不足0.5米时返回422，报文说明还差多少米并给出最早可靠泊时刻；窗口内无潮位数据时拒绝审批。
+- 审批结果快照（最低潮位、可用水深、安全余量等）写入航次`payload.tide_check`及审计事件，历史航次查询不受后续潮位补录或修正影响。
 
 ## 测试
 

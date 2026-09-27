@@ -47,8 +47,30 @@ class Repository:
                     details TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS tide_observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    berth TEXT NOT NULL,
+                    tide_hour INTEGER NOT NULL,
+                    height_m REAL NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_by TEXT NOT NULL,
+                    updated_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(berth, tide_hour)
+                );
+                CREATE TABLE IF NOT EXISTS tide_corrections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    observation_id INTEGER NOT NULL REFERENCES tide_observations(id) ON DELETE CASCADE,
+                    old_height_m REAL NOT NULL,
+                    new_height_m REAL NOT NULL,
+                    reason TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_records_state ON records(state);
                 CREATE INDEX IF NOT EXISTS idx_audit_record ON audit_events(record_id, id);
+                CREATE INDEX IF NOT EXISTS idx_tide_corrections_obs ON tide_corrections(observation_id, id);
                 """
             )
 
@@ -136,6 +158,60 @@ class Repository:
             item["details"] = json.loads(item["details"])
             result.append(item)
         return result
+
+    def create_tide(self, berth: str, tide_hour: int, height_m: float, actor_id: str) -> Dict[str, Any]:
+        now = _now()
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "INSERT INTO tide_observations(berth,tide_hour,height_m,version,created_by,updated_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (berth, tide_hour, height_m, 1, actor_id, actor_id, now, now),
+                )
+                observation_id = int(cursor.lastrowid)
+                row = connection.execute("SELECT * FROM tide_observations WHERE id=?", (observation_id,)).fetchone()
+        except sqlite3.IntegrityError as exc:
+            raise Conflict("该泊位该潮时已有潮位数据") from exc
+        return dict(row)
+
+    def list_tides(self, berth: Optional[str] = None) -> List[Dict[str, Any]]:
+        with self._connect() as connection:
+            if berth:
+                rows = connection.execute("SELECT * FROM tide_observations WHERE berth=? ORDER BY tide_hour", (berth,)).fetchall()
+            else:
+                rows = connection.execute("SELECT * FROM tide_observations ORDER BY berth, tide_hour").fetchall()
+        return [dict(row) for row in rows]
+
+    def correct_tide(self, observation_id: int, new_height_m: float, reason: str, actor_id: str) -> Dict[str, Any]:
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM tide_observations WHERE id=?", (observation_id,)).fetchone()
+            if row is None:
+                connection.rollback()
+                raise NotFound("潮位记录不存在")
+            old_height_m = float(row["height_m"])
+            version = int(row["version"]) + 1
+            connection.execute(
+                "UPDATE tide_observations SET height_m=?,version=?,updated_by=?,updated_at=? WHERE id=?",
+                (new_height_m, version, actor_id, now, observation_id),
+            )
+            connection.execute(
+                "INSERT INTO tide_corrections(observation_id,old_height_m,new_height_m,reason,actor_id,created_at) VALUES(?,?,?,?,?,?)",
+                (observation_id, old_height_m, new_height_m, reason, actor_id, now),
+            )
+            updated = connection.execute("SELECT * FROM tide_observations WHERE id=?", (observation_id,)).fetchone()
+            connection.commit()
+        result = dict(updated)
+        result["correction"] = {"old_height_m": old_height_m, "new_height_m": new_height_m, "reason": reason}
+        return result
+
+    def tide_corrections(self, observation_id: int) -> List[Dict[str, Any]]:
+        with self._connect() as connection:
+            row = connection.execute("SELECT id FROM tide_observations WHERE id=?", (observation_id,)).fetchone()
+            if row is None:
+                raise NotFound("潮位记录不存在")
+            rows = connection.execute("SELECT * FROM tide_corrections WHERE observation_id=? ORDER BY id", (observation_id,)).fetchall()
+        return [dict(row) for row in rows]
 
     def stats(self) -> Dict[str, int]:
         with self._connect() as connection:

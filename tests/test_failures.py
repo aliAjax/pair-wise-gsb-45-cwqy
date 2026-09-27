@@ -29,6 +29,8 @@ class FailureTest(unittest.TestCase):
         record = self.service.create(Actor("creator", "port_controller"), "VOY-21001", CREATE_DATA)
         first = FLOW[0]
         record = self.service.act(Actor("operator", first[1]), record["id"], record["version"], first[0], first[2])
+        for hour in (4, 5, 6, 7, 8):
+            self.service.create_tide(Actor("duty", "duty_officer"), {"berth": "B12", "tide_hour": hour, "height_m": 1.0})
         second = FLOW[1]
         with self.assertRaises(Conflict):
             self.service.act(Actor("operator", second[1]), record["id"], record["version"] - 1, second[0], second[2])
